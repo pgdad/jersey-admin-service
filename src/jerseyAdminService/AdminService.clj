@@ -2,7 +2,7 @@
   (:require [zookeeper :as zk] [clojure.tools.logging :as log] [clojure.string])
   (:use [clojure.data.json :only [json-str]])
   (:use [jerseyzoo.JerseyZooServletContainer :only [getZooConnection]])
-  (:import (javax.ws.rs GET POST PathParam Path Produces)
+  (:import (javax.ws.rs GET POST DELETE PathParam Path Produces)
            (jerseyzoo JerseyZooServletContainer))
   (:gen-class))
 
@@ -24,8 +24,18 @@
 (definterface ClientRegistrationGetter
   (^String getRegistrations [^String env ^String app ^String service]))
 
+(definterface ClientsRegistrationGetter
+  (^String getAllRegistrations [^String env]))
+
 (definterface ClientRegistrator
   (^void addRegistration [^String env ^String app ^String service ^String id]))
+
+(definterface CreatePassiveGetter
+  (^String getAllCreatePassives [^String env]))
+
+(definterface CreatePassive
+  (^void addCreatePassive [^String env ^String app ^String service])
+  (^void rmCreatePassive [^String env ^String app ^String service]))
 
 (defn- child-nodes
   [connection node]
@@ -182,6 +192,32 @@
            clients (zk/children z prefix)]
        (json-str clients))))
 
+(deftype ^{Path "/all-clientregistrations/{env}"}
+    ClientsRegistrationGetterImpl []
+    ClientsRegistrationGetter
+    (^{GET true
+       Produces ["application/json"]}
+     ^String getAllRegistrations [this
+                                  ^{PathParam "env"} ^String env]
+     (use 'clojure.data.json)
+     (use 'jerseyAdminService.AdminService)
+     (let [z @(getZooConnection "localhost")
+           prefix (str "/clientregistrations/" env)
+           applications (zk/children z prefix)
+           app-reg-ref (ref {})]
+           (doseq [app applications]
+               (let [services-reg-ref (ref {})
+                     srv-root (str prefix "/" app)
+                     services (zk/children z srv-root)]
+                   (doseq [service services]
+                       (let [cli-root (str srv-root "/" service)
+                             clients (zk/children z cli-root)]
+                           (dosync
+                               (alter services-reg-ref assoc :service service :clients clients))))
+                   (dosync
+                       (alter app-reg-ref assoc :app app :services @services-reg-ref))))
+                (json-str @app-reg-ref))))
+
 (deftype ^{Path "/clientregistrations/{env}/{app}/{service}/{id}"}
     ClientRegistratorImpl []
     ClientRegistrator
@@ -196,3 +232,57 @@
      (let [z @(getZooConnection "localhost")
            node (str "/clientregistrations/" env "/" app "/" service "/" id)]
        (zk/create-all z node :persistent? true))))
+
+(deftype ^{Path "/createpassive/{env}"}
+    CreatePassiveGetterImpl []
+    CreatePassiveGetter
+    (^{GET true
+       Produces ["application/json"]}
+     ^String getAllCreatePassives [this
+                                  ^{PathParam "env"} ^String env]
+     (use 'clojure.data.json)
+     (use 'jerseyAdminService.AdminService)
+     (let [z @(getZooConnection "localhost")
+           prefix (str "/services/" env)
+           applications (zk/children z prefix)
+           app-reg-ref (ref {})]
+           (doseq [app applications]
+               (let [srv-root (str prefix "/" app "/createpassive")
+                     srv-root-exists (zk/exists z srv-root)
+                     services (if srv-root-exists
+                         (zk/children z srv-root)
+                         '())]
+                   (dosync
+                       (if (and services (not (= `() services)))
+                           (alter app-reg-ref
+                               assoc app services)))))
+           (json-str @app-reg-ref))))
+
+(deftype ^{Path "/createpassive/{env}/{app}/{service}"}
+    CreatePassiveImpl []
+    CreatePassive
+    (^{POST true
+       Consumes ["plain/text"]}
+     ^void addCreatePassive [this
+                            ^{PathParam "env"} ^String env
+                            ^{PathParam "app"} ^String app
+                            ^{PathParam "service"} ^String service]
+     (use 'jerseyAdminService.AdminService)
+(println (str "CREATE PASSIVE: " env " " app " " service))
+     (let [z @(getZooConnection "localhost")
+           node (str "/services/" env "/" app "/createpassive/" service)]
+       (zk/create-all z node :persistent? true)))
+
+    (^{DELETE true
+       Consumes ["plain/text"]}
+     ^void rmCreatePassive [this
+                           ^{PathParam "env"} ^String env
+                           ^{PathParam "app"} ^String app
+                           ^{PathParam "service"} ^String service]
+     (use 'jerseyAdminService.AdminService)
+     (let [z @(getZooConnection "localhost")
+           node (str "/services/" env "/" app "/createpassive/" service)
+           cr-passive-exists (zk/exists z node)]
+       (if cr-passive-exists
+           (zk/delete z node)))))
+
