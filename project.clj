@@ -1,4 +1,4 @@
-(defproject org.clojars.pgdad/jerseyAdminService "1.0.3"
+(defproject jersey-admin-service "1.0.4"
   :description "FIXME: write description"
   :aot [jerseyAdminService.AdminService jerseyAdminService.adm]
   :repl-init jerseyAdminService.AdminService
