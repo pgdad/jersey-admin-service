@@ -1,8 +1,10 @@
 (ns jerseyAdminService.AdminService
-  (:require [zookeeper :as zk] [clojure.tools.logging :as log] [clojure.string])
+  (:require [zookeeper :as zk] [clojure.tools.logging :as log]
+            [clojure.string])
+  (:use [clj-zoo.serverSession])
   (:use [clojure.data.json :only [json-str]])
   (:use [jerseyzoo.JerseyZooServletContainer :only [getZooConnection]])
-  (:import (javax.ws.rs GET POST PathParam Path Produces)
+  (:import (javax.ws.rs GET POST FormParam PathParam Path Produces)
            (jerseyzoo JerseyZooServletContainer))
   (:gen-class))
 
@@ -18,6 +20,15 @@
 (definterface ServiceGetter
   (^String getServices [^String env ^String app ^String region]))
 
+(definterface PassiveServiceGetter
+  (^String getPassiveServices [^String env ^String app ^String region]))
+
+(definterface PassivationRequestor
+  (^void requestPassivation [^String node]))
+;; 
+(definterface ActivationRequestor
+  (^void requestActivation [^String node]))
+
 (definterface ServerGetter
   (^String getServers [^String env ^String app ^String region]))
 
@@ -29,7 +40,8 @@
 
 (defn- child-nodes
   [connection node]
-  (let [children (zk/children connection node)
+  (let [exists (zk/exists connection node)
+        children (if exists (zk/children connection node) '())
         c-nodes (map (fn [child]
                        (str node "/" child))
                      children)]
@@ -112,7 +124,7 @@
         minor (nth s-info-parts 3)
         micro (nth s-info-parts 4)]
     
-    {name {:instance (nth data-parts 1) :url (nth data-parts 2)
+    {name {:node node :instance (nth data-parts 1) :url (nth data-parts 2)
            :major major :minor minor :micro micro}}
     ))
 
@@ -137,6 +149,29 @@
                                    instances)
                 ]
             (json-str services-data))))
+
+(deftype ^{Path "/passiveservices/{env}/{app}/{region}"}
+    PassiveServiceGetterImpl []
+    PassiveServiceGetter
+    (^{GET true
+       Produces ["application/json"]}
+     ^String getPassiveServices [this
+                                 ^{PathParam "env"} ^String env
+                                 ^{PathParam "app"} ^String app
+                                 ^{PathParam "region"} ^String region]
+     (use 'clojure.data.json)
+     (use 'jerseyAdminService.AdminService)
+     (let [z @(getZooConnection "localhost")
+           prefix (str "/services/" env "/" app "/passiveservices/" region)
+           service-nodes (child-nodes z prefix)
+           instances (flatten (map (fn [child]
+                                     (ggg-child-nodes z child))
+                                   service-nodes))
+           services-data (map (fn [serv-node]
+                                (service-info z serv-node prefix))
+                              instances)
+           ]
+       (json-str services-data))))
 
 (defn- server-info
   [connection node]
@@ -196,3 +231,31 @@
      (let [z @(getZooConnection "localhost")
            node (str "/clientregistrations/" env "/" app "/" service "/" id)]
        (zk/create-all z node :persistent? true))))
+
+(deftype ^{Path "/requestpassivation"}
+    PassivationRequestorImpl []
+    PassivationRequestor
+    (^{POST true
+       Consumes ["application/x-www-form-urlencoded"]}
+     ^void requestPassivation [this
+                               ^{FormParam "node"} ^String node]
+     (use 'jerseyAdminService.AdminService)
+     (let [z @(getZooConnection "localhost")
+           pn (my-passivation-request-node node)]
+       (zk/create-all z pn :persistent? true)
+       nil)
+     ))
+
+(deftype ^{Path "/requestactivation"}
+    ActivationRequestorImpl []
+    ActivationRequestor
+    (^{POST true
+       Consumes ["application/x-www-form-urlencoded"]}
+     ^void requestActivation [this
+                              ^{FormParam "node"} ^String node]
+     (use 'jerseyAdminService.AdminService)
+     (let [z @(getZooConnection "localhost")
+           pn (my-activation-request-node node)]
+       (zk/create-all z pn :persistent? true)
+       nil)
+  ))
