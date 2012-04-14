@@ -48,6 +48,9 @@
   (^void addCreatePassive [^String env ^String app ^String service])
   (^void rmCreatePassive [^String env ^String app ^String service]))
 
+(definterface CleanUpCliRegs
+  (^String cleanUpCliRegs [^String env]))
+
 (defn- child-nodes
   [connection node]
   (let [exists (zk/exists connection node)
@@ -223,7 +226,8 @@
      (use 'jerseyAdminService.AdminService)
      (let [z @(getZooConnection "localhost")
            prefix (str "/clientregistrations/" env "/" app "/" service)
-           clients (zk/children z prefix)]
+           reg-exists (zk/exists z prefix)
+           clients (if reg-exists (zk/children z prefix) '())]
        (json-str clients))))
 
 (deftype ^{Path "/all-clientregistrations/{env}"}
@@ -346,3 +350,29 @@
        (zk/create-all z pn :persistent? true)
        nil)
   ))
+
+(deftype ^{Path "/cleanupclientregistrations/{env}"}
+    CleanUpCliRegsImpl []
+    CleanUpCliRegs
+    (^{GET true
+       Consumes ["plain/text"]}
+     ^String cleanUpCliRegs [this
+                             ^{PathParam "env"} ^String env]
+     (use 'jerseyAdminService.AdminService)
+     (let [z @(getZooConnection "localhost")
+           removed-nodes-ref (ref '())
+           env-node (str "/clientregistrations/" env)
+           env-exists (zk/exists z env-node)
+           apps (if env-exists (child-nodes z env-node) nil)]
+       (if-not (= apps '())
+         ;; env node have children like:
+         ;; <env-node>/<APP>/<SERVICE> or
+         ;; <env-node>/<APP>/<SERVICE>/<CLIENT-ID>
+         ;; remove all <SERVICE> nodes that have no <CLIENT-ID> children
+         (let [service-nodes (g-child-nodes z env-node)]
+           (doseq [serv-node service-nodes]
+             (if-not (zk/children z serv-node)
+               (do
+                 (zk/delete z serv-node)
+                  (dosync (alter removed-nodes-ref (fn [nodes] (cons serv-node nodes)))))))))
+       (json-str @removed-nodes-ref))))
