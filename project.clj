@@ -1,4 +1,4 @@
-(defproject jersey-admin-service "1.0.4"
+(defproject jersey-admin-service "1.0.5"
   :description "FIXME: write description"
   :aot [jerseyAdminService.AdminService jerseyAdminService.adm]
   :repl-init jerseyAdminService.AdminService
