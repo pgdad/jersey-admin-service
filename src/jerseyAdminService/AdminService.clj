@@ -51,6 +51,9 @@
 (definterface CleanUpCliRegs
   (^String cleanUpCliRegs [^String env]))
 
+(definterface CleanUpServices
+  (^String cleanUpServices [^String env ^String app]))
+
 (defn- child-nodes
   [connection node]
   (let [exists (zk/exists connection node)
@@ -363,7 +366,7 @@
            removed-nodes-ref (ref '())
            env-node (str "/clientregistrations/" env)
            env-exists (zk/exists z env-node)
-           apps (if env-exists (child-nodes z env-node) nil)]
+           apps (if env-exists (child-nodes z env-node) '())]
        (if-not (= apps '())
          ;; env node have children like:
          ;; <env-node>/<APP>/<SERVICE> or
@@ -376,3 +379,59 @@
                  (zk/delete z serv-node)
                   (dosync (alter removed-nodes-ref (fn [nodes] (cons serv-node nodes)))))))))
        (json-str @removed-nodes-ref))))
+
+(defn- delete-childless-node
+  [connection accum-ref node]
+  (if-not (zk/children connection node)
+    (do
+      (zk/delete connection node)
+      (dosync
+       (alter accum-ref (fn [accum] (cons node accum)))))))
+
+(defn- cleanupservices
+  [connection env app active?]
+  (let [z connection
+        removed-nodes-ref (ref '())
+        app-node (str "/services/" env "/" app (if active? "/services" "/passiveservices"))
+        app-exists (zk/exists z app-node)
+        regions (if app-exists (child-nodes z app-node) '())]
+    (if-not (= regions '())
+      (doseq [region regions]
+        (let [micro-ver-nodes (ggg-child-nodes z region)]
+          (doseq [micro-node micro-ver-nodes]
+            (delete-childless-node z removed-nodes-ref micro-node))
+          )
+        (let [minor-ver-nodes (gg-child-nodes z region)]
+          (doseq [minor-node minor-ver-nodes]
+            (delete-childless-node z removed-nodes-ref minor-node)))
+        (let [major-ver-nodes (g-child-nodes z region)]
+          (doseq [major-node major-ver-nodes]
+            (delete-childless-node z removed-nodes-ref major-node)))
+        (let [service-nodes (child-nodes z region)]
+          (doseq [service-node service-nodes]
+            (delete-childless-node z removed-nodes-ref service-node)))
+        )
+      )
+    (json-str @removed-nodes-ref)))
+
+(deftype ^{Path "/cleanup/services/{env}/{app}"}
+    CleanUpServicesImpl []
+    CleanUpServices
+    (^{GET true
+       Consumes ["plain/text"]}
+     ^String cleanUpServices [this
+                              ^{PathParam "env"} ^String env
+                              ^{PathParam "app"} ^String app]
+     (use 'jerseyAdminService.AdminService)
+     (cleanupservices @(getZooConnection "localhost") env app true)))
+
+(deftype ^{Path "/cleanup/passiveservices/{env}/{app}"}
+    CleanUpPassiveServicesImpl []
+    CleanUpServices
+    (^{GET true
+       Consumes ["plan/text"]}
+     ^String cleanUpServices [this
+                              ^{PathParam "env"} ^String env
+                              ^{PathParam "app"} ^String app]
+     (use 'jerseyAdminService.AdminService)
+     (cleanupservices @(getZooConnection "localhost") env app false)))
