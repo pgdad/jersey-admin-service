@@ -1,11 +1,11 @@
 (ns jerseyAdminService.AdminService
   (:require [zookeeper :as zk] [clojure.tools.logging :as log]
-            [clojure.string])
+            [clojure.string] [clojure.java.io])
   (:use [clj-zoo.serverSession])
   (:use [clojure.data.json :only [json-str]])
   (:use [jerseyzoo.JerseyZooServletContainer :only [getZooConnection]])
   (:import (javax.ws.rs GET POST PUT DELETE FormParam PathParam Path Produces)
-           (jerseyzoo JerseyZooServletContainer))
+           (jerseyzoo JerseyZooServletContainer) (java.util Properties))
   (:gen-class))
 
 (definterface EnvGetter
@@ -54,6 +54,21 @@
 (definterface CleanUpServices
   (^String cleanUpServices [^String env ^String app]))
 
+(defn- getKeepersFromSysPropsOrPropsFile
+  []
+  (let [keeper-prop (System/getProperty "keepers")]
+    (if keeper-prop
+      keeper-prop
+      (let [props-url (.getFile
+                       (clojure.java.io/resource "jerseyAdminService.properties"))
+            props (java.util.Properties.)
+            r (clojure.java.io/reader props-url)]
+        (. props load r)
+        (. props getProperty "keepers")))
+    ))
+
+(def getKeepers (memoize getKeepersFromSysPropsOrPropsFile))
+
 (defn- child-nodes
   [connection node]
   (let [exists (zk/exists connection node)
@@ -94,8 +109,8 @@
           ^String getEnvs [this]
           (use 'clojure.data.json)
           (use 'jerseyzoo.JerseyZooServletContainer)
-          (let [z @(getZooConnection "localhost")
-		envs (zk/children z "/services")]
+          (let [z @(getZooConnection (getKeepers))
+		envs (zk/children z "/")]
             (json-str envs))))
 
 (deftype ^{Path "/applications/{env}"} AppGetterImpl []
@@ -105,8 +120,8 @@
           ^String getApps [this ^{PathParam "env"} ^String env]
           (use 'clojure.data.json)
           (use 'jerseyzoo.JerseyZooServletContainer)
-          (let [z @(getZooConnection "localhost")
-		apps (zk/children z (str "/services/" env))]
+          (let [z @(getZooConnection (getKeepers))
+		apps (zk/children z (str "/" env))]
             (json-str apps))))
 
 (deftype ^{Path "/regions/{env}/{app}"} RegionGetterImpl []
@@ -118,8 +133,8 @@
                               ^{PathParam "app"} ^String app]
           (use 'clojure.data.json)
           (use 'jerseyzoo.JerseyZooServletContainer)
-          (let [z @(getZooConnection "localhost")
-		regions (zk/children z (str "/services/" env "/" app "/services"))]
+          (let [z @(getZooConnection (getKeepers))
+		regions (zk/children z (str "/" env "/" app "/services"))]
             (json-str regions))))
 
 (def nl-pattern (re-pattern "\n"))
@@ -153,8 +168,8 @@
                                ^{PathParam "region"} ^String region]
           (use 'clojure.data.json)
           (use 'jerseyAdminService.AdminService)
-          (let [z @(getZooConnection "localhost")
-                prefix (str "/services/" env "/" app "/services/" region)
+          (let [z @(getZooConnection (getKeepers))
+                prefix (str "/" env "/" app "/services/" region)
                 service-nodes (child-nodes z prefix)
                 instances (flatten (map (fn [child]
                                           (ggg-child-nodes z child))
@@ -176,8 +191,8 @@
                                  ^{PathParam "region"} ^String region]
      (use 'clojure.data.json)
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection "localhost")
-           prefix (str "/services/" env "/" app "/passiveservices/" region)
+     (let [z @(getZooConnection (getKeepers))
+           prefix (str "/" env "/" app "/passiveservices/" region)
            service-nodes (child-nodes z prefix)
            instances (flatten (map (fn [child]
                                      (ggg-child-nodes z child))
@@ -208,8 +223,8 @@
                               ^{PathParam "region"} ^String region]
           (use 'clojure.data.json)
           (use 'jerseyAdminService.AdminService)
-          (let [z @(getZooConnection "localhost")
-                prefix (str "/services/" env "/" app "/servers/" region)
+          (let [z @(getZooConnection (getKeepers))
+                prefix (str "/" env "/" app "/servers/" region)
                 server-nodes (child-nodes z prefix)
                 servers-data (map (fn [serv-node]
                                     (server-info z serv-node))
@@ -227,8 +242,8 @@
                                ^{PathParam "service"} ^String service]
      (use 'clojure.data.json)
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection "localhost")
-           prefix (str "/clientregistrations/" env "/" app "/" service)
+     (let [z @(getZooConnection (getKeepers))
+           prefix (str "/" env "/" app "/clientregistrations/" service)
            reg-exists (zk/exists z prefix)
            clients (if reg-exists (zk/children z prefix) '())]
        (json-str clients))))
@@ -242,14 +257,15 @@
                                   ^{PathParam "env"} ^String env]
      (use 'clojure.data.json)
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection "localhost")
-           prefix (str "/clientregistrations/" env)
+     (let [z @(getZooConnection (getKeepers))
+           prefix (str "/" env)
            applications (zk/children z prefix)
            app-reg-ref (ref {})]
            (doseq [app applications]
                (let [services-reg-ref (ref {})
-                     srv-root (str prefix "/" app)
-                     services (zk/children z srv-root)]
+                     srv-root (str prefix "/" app "/clientregistrations")
+                     cliregs-exist (zk/exists z srv-root)
+                     services (if cliregs-exist (zk/children z srv-root) '())]
                    (doseq [service services]
                        (let [cli-root (str srv-root "/" service)
                              clients (zk/children z cli-root)]
@@ -270,8 +286,8 @@
                             ^{PathParam "service"} ^String service
                             ^{PathParam "id"} ^String id]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection "localhost")
-           node (str "/clientregistrations/" env "/" app "/" service "/" id)]
+     (let [z @(getZooConnection (getKeepers))
+           node (str "/" env "/" app "/clientregistrations/" service "/" id)]
        (zk/create-all z node :persistent? true))))
 
 (deftype ^{Path "/createpassive/{env}"}
@@ -283,8 +299,8 @@
                                   ^{PathParam "env"} ^String env]
      (use 'clojure.data.json)
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection "localhost")
-           prefix (str "/services/" env)
+     (let [z @(getZooConnection (getKeepers))
+           prefix (str "/" env)
            applications (zk/children z prefix)
            app-reg-ref (ref {})]
            (doseq [app applications]
@@ -309,8 +325,8 @@
                             ^{PathParam "app"} ^String app
                             ^{PathParam "service"} ^String service]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection "localhost")
-           node (str "/services/" env "/" app "/createpassive/" service)]
+     (let [z @(getZooConnection (getKeepers))
+           node (str "/" env "/" app "/createpassive/" service)]
        (zk/create-all z node :persistent? true)))
 
     (^{DELETE true
@@ -320,8 +336,8 @@
                            ^{PathParam "app"} ^String app
                            ^{PathParam "service"} ^String service]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection "localhost")
-           node (str "/services/" env "/" app "/createpassive/" service)
+     (let [z @(getZooConnection (getKeepers))
+           node (str "/" env "/" app "/createpassive/" service)
            cr-passive-exists (zk/exists z node)]
        (if cr-passive-exists
            (zk/delete z node)))))
@@ -334,7 +350,7 @@
      ^void requestPassivation [this
                                ^{FormParam "node"} ^String node]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection "localhost")
+     (let [z @(getZooConnection (getKeepers))
            pn (my-passivation-request-node node)]
        (zk/create-all z pn :persistent? true)
        nil)
@@ -348,7 +364,7 @@
      ^void requestActivation [this
                               ^{FormParam "node"} ^String node]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection "localhost")
+     (let [z @(getZooConnection (getKeepers))
            pn (my-activation-request-node node)]
        (zk/create-all z pn :persistent? true)
        nil)
@@ -362,9 +378,9 @@
      ^String cleanUpCliRegs [this
                              ^{PathParam "env"} ^String env]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection "localhost")
+     (let [z @(getZooConnection (getKeepers))
            removed-nodes-ref (ref '())
-           env-node (str "/clientregistrations/" env)
+           env-node (str "/" env)
            env-exists (zk/exists z env-node)
            apps (if env-exists (child-nodes z env-node) '())]
        (if-not (= apps '())
@@ -372,12 +388,13 @@
          ;; <env-node>/<APP>/<SERVICE> or
          ;; <env-node>/<APP>/<SERVICE>/<CLIENT-ID>
          ;; remove all <SERVICE> nodes that have no <CLIENT-ID> children
-         (let [service-nodes (g-child-nodes z env-node)]
-           (doseq [serv-node service-nodes]
-             (if-not (zk/children z serv-node)
-               (do
-                 (zk/delete z serv-node)
-                  (dosync (alter removed-nodes-ref (fn [nodes] (cons serv-node nodes)))))))))
+         (doseq [app apps]
+           (let [service-nodes (child-nodes z (str app "/clientregistrations"))]
+             (doseq [serv-node service-nodes]
+               (if-not (zk/children z serv-node)
+                 (do
+                   (zk/delete z serv-node)
+                   (dosync (alter removed-nodes-ref (fn [nodes] (cons serv-node nodes))))))))))
        (json-str @removed-nodes-ref))))
 
 (defn- delete-childless-node
@@ -392,7 +409,7 @@
   [connection env app active?]
   (let [z connection
         removed-nodes-ref (ref '())
-        app-node (str "/services/" env "/" app (if active? "/services" "/passiveservices"))
+        app-node (str "/" env "/" app (if active? "/services" "/passiveservices"))
         app-exists (zk/exists z app-node)
         regions (if app-exists (child-nodes z app-node) '())]
     (if-not (= regions '())
@@ -423,7 +440,7 @@
                               ^{PathParam "env"} ^String env
                               ^{PathParam "app"} ^String app]
      (use 'jerseyAdminService.AdminService)
-     (cleanupservices @(getZooConnection "localhost") env app true)))
+     (cleanupservices @(getZooConnection (getKeepers)) env app true)))
 
 (deftype ^{Path "/cleanup/passiveservices/{env}/{app}"}
     CleanUpPassiveServicesImpl []
@@ -434,4 +451,4 @@
                               ^{PathParam "env"} ^String env
                               ^{PathParam "app"} ^String app]
      (use 'jerseyAdminService.AdminService)
-     (cleanupservices @(getZooConnection "localhost") env app false)))
+     (cleanupservices @(getZooConnection (getKeepers)) env app false)))

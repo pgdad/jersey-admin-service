@@ -1,6 +1,6 @@
 # jerseyAdminService
 
-FIXME: write description
+Services to admininster underlying zookeeper hierarchy.
 
 ## Usage
 
