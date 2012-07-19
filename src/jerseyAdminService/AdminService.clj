@@ -8,51 +8,45 @@
            (jerseyzoo JerseyZooServletContainer) (java.util Properties))
   (:gen-class))
 
-(definterface EnvGetter
-  (^String getEnvs []))
-
-(definterface AppGetter
-  (^String getApps [^String env]))
-
 (definterface RegionGetter
-  (^String getRegions [^String env ^String app]))
+  (^String getRegions [^String app]))
 
 (definterface ServiceGetter
-  (^String getServices [^String env ^String app ^String region]))
+  (^String getServices [^String region]))
 
 (definterface PassiveServiceGetter
-  (^String getPassiveServices [^String env ^String app ^String region]))
+  (^String getPassiveServices [^String region]))
 
 (definterface PassivationRequestor
-  (^void requestPassivation [^String node]))
+  (^void requestPassivation [^String region ^String service ^String id]))
 ;; 
 (definterface ActivationRequestor
-  (^void requestActivation [^String node]))
+  (^void requestActivation [^String region ^String service ^String id]))
 
 (definterface ServerGetter
-  (^String getServers [^String env ^String app ^String region]))
+  (^String getServers [^String region]))
 
 (definterface ClientRegistrationGetter
-  (^String getRegistrations [^String env ^String app ^String service]))
+  (^String getRegistrations [^String service]))
 
 (definterface ClientsRegistrationGetter
-  (^String getAllRegistrations [^String env]))
+  (^String getAllRegistrations []))
 
 (definterface ClientRegistrator
-  (^void addRegistration [^String env ^String app ^String service ^String id]))
+  (^void addRegistration [^String service ^String id]))
 
 (definterface CreatePassiveGetter
-  (^String getAllCreatePassives [^String env]))
+  (^String getAllCreatePassives []))
 
 (definterface CreatePassive
-  (^void addCreatePassive [^String env ^String app ^String service])
-  (^void rmCreatePassive [^String env ^String app ^String service]))
+  (^void addCreatePassive [^String service])
+  (^void rmCreatePassive [^String service]))
 
 (definterface CleanUpCliRegs
-  (^String cleanUpCliRegs [^String env]))
+  (^String cleanUpCliRegs []))
 
 (definterface CleanUpServices
-  (^String cleanUpServices [^String env ^String app]))
+  (^String cleanUpServices []))
 
 (defn- getKeepersFromSysPropsOrPropsFile
   []
@@ -102,39 +96,15 @@
                         ggc-nodes)]
     (flatten gggc-nodes)))
 
-(deftype ^{Path "/environments"} EnvGetterImpl []
-         EnvGetter
-         (^{GET true
-            Produces ["application/json"]}
-          ^String getEnvs [this]
-          (use 'clojure.data.json)
-          (use 'jerseyzoo.JerseyZooServletContainer)
-          (let [z @(getZooConnection (getKeepers))
-		envs (zk/children z "/")]
-            (json-str envs))))
-
-(deftype ^{Path "/applications/{env}"} AppGetterImpl []
-         AppGetter
-         (^{GET true
-            Produces ["application/json"]}
-          ^String getApps [this ^{PathParam "env"} ^String env]
-          (use 'clojure.data.json)
-          (use 'jerseyzoo.JerseyZooServletContainer)
-          (let [z @(getZooConnection (getKeepers))
-		apps (zk/children z (str "/" env))]
-            (json-str apps))))
-
-(deftype ^{Path "/regions/{env}/{app}"} RegionGetterImpl []
+(deftype ^{Path "/regions"} RegionGetterImpl []
          RegionGetter
          (^{GET true
             Produces ["application/json"]}
-          ^String getRegions [this
-                              ^{PathParam "env"} ^String env
-                              ^{PathParam "app"} ^String app]
+          ^String getRegions [this]
           (use 'clojure.data.json)
           (use 'jerseyzoo.JerseyZooServletContainer)
-          (let [z @(getZooConnection (getKeepers))
-		regions (zk/children z (str "/" env "/" app "/services"))]
+          (let [f @(getCuratorFramework (getKeepers))
+		regions (-> f .getChildren (.forPath "/services"))]
             (json-str regions))))
 
 (def nl-pattern (re-pattern "\n"))
@@ -158,50 +128,34 @@
            :major major :minor minor :micro micro}}
     ))
 
-(deftype ^{Path "/services/{env}/{app}/{region}"} ServiceGetterImpl []
+(deftype ^{Path "/services/{region}"} ServiceGetterImpl []
          ServiceGetter
          (^{GET true
             Produces ["application/json"]}
           ^String getServices [this
-                               ^{PathParam "env"} ^String env
-                               ^{PathParam "app"} ^String app
                                ^{PathParam "region"} ^String region]
           (use 'clojure.data.json)
           (use 'jerseyAdminService.AdminService)
-          (let [z @(getZooConnection (getKeepers))
-                prefix (str "/" env "/" app "/services/" region)
-                service-nodes (child-nodes z prefix)
-                instances (flatten (map (fn [child]
-                                          (ggg-child-nodes z child))
-                                        service-nodes))
-                services-data (map (fn [serv-node]
-                                     (service-info z serv-node prefix))
-                                   instances)
+          (let [f @(getCuratorFramework (getKeepers))
+                prefix (str "/services/" region)
+                services (-> f .getChildren (.forPath prefix))
                 ]
-            (json-str services-data))))
+            (json-str services))))
 
-(deftype ^{Path "/passiveservices/{env}/{app}/{region}"}
+(deftype ^{Path "/passiveservices/{region}"}
     PassiveServiceGetterImpl []
     PassiveServiceGetter
     (^{GET true
        Produces ["application/json"]}
      ^String getPassiveServices [this
-                                 ^{PathParam "env"} ^String env
-                                 ^{PathParam "app"} ^String app
                                  ^{PathParam "region"} ^String region]
      (use 'clojure.data.json)
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection (getKeepers))
-           prefix (str "/" env "/" app "/passiveservices/" region)
-           service-nodes (child-nodes z prefix)
-           instances (flatten (map (fn [child]
-                                     (ggg-child-nodes z child))
-                                   service-nodes))
-           services-data (map (fn [serv-node]
-                                (service-info z serv-node prefix))
-                              instances)
+     (let [f @(getCuratorFramework (getKeepers))
+           prefix ("/passiveservices/" region)
+           services (-> f .getChildren (.forPath prefix))
            ]
-       (json-str services-data))))
+       (json-str services))))
 
 (defn- server-info
   [connection node]
@@ -213,23 +167,18 @@
         host (nth data-parts 2)]
     {:node node :load load :host host}))
 
-(deftype ^{Path "/servers/{env}/{app}/{region}"} ServerGetterImpl []
+(deftype ^{Path "/servers/{region}"} ServerGetterImpl []
          ServerGetter
          (^{GET true
             Produces ["application/json"]}
           ^String getServers [this
-                              ^{PathParam "env"} ^String env
-                              ^{PathParam "app"} ^String app
                               ^{PathParam "region"} ^String region]
           (use 'clojure.data.json)
           (use 'jerseyAdminService.AdminService)
-          (let [z @(getZooConnection (getKeepers))
-                prefix (str "/" env "/" app "/servers/" region)
-                server-nodes (child-nodes z prefix)
-                servers-data (map (fn [serv-node]
-                                    (server-info z serv-node))
-                                  server-nodes)]
-            (json-str servers-data))))
+          (let [f @(getCuratorFramework (getKeepers))
+                prefix ("/servers/" region)
+                servers (-> f .getChildren (.forPath prefix))]
+            (json-str servers))))
 
 (deftype ^{Path "/clientregistrations/{env}/{app}/{service}"}
     ClientRegistrationGetterImpl []
@@ -237,110 +186,90 @@
     (^{GET true
        Produces ["application/json"]}
      ^String getRegistrations [this
-                               ^{PathParam "env"} ^String env
-                               ^{PathParam "app"} ^String app
                                ^{PathParam "service"} ^String service]
      (use 'clojure.data.json)
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection (getKeepers))
-           prefix (str "/" env "/" app "/clientregistrations/" service)
-           reg-exists (zk/exists z prefix)
-           clients (if reg-exists (zk/children z prefix) '())]
+     (let [f @(getCuratorFramework (getKeepers))
+           prefix ("/clientregistrations/" service)
+           reg-exists (-> f .checkExists (.forPath prefix))
+           clients (if reg-exists (-> f .getChildren (.forPath prefix)) '())]
        (json-str clients))))
 
-(deftype ^{Path "/all-clientregistrations/{env}"}
+(deftype ^{Path "/all-clientregistrations"}
     ClientsRegistrationGetterImpl []
     ClientsRegistrationGetter
     (^{GET true
        Produces ["application/json"]}
-     ^String getAllRegistrations [this
-                                  ^{PathParam "env"} ^String env]
+     ^String getAllRegistrations [this]
      (use 'clojure.data.json)
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection (getKeepers))
-           prefix (str "/" env)
-           applications (zk/children z prefix)
-           app-reg-ref (ref {})]
-           (doseq [app applications]
-               (let [services-reg-ref (ref {})
-                     srv-root (str prefix "/" app "/clientregistrations")
-                     cliregs-exist (zk/exists z srv-root)
-                     services (if cliregs-exist (zk/children z srv-root) '())]
-                   (doseq [service services]
-                       (let [cli-root (str srv-root "/" service)
-                             clients (zk/children z cli-root)]
-                           (dosync
-                               (alter services-reg-ref assoc service clients))))
-                   (dosync
-                       (alter app-reg-ref assoc app @services-reg-ref))))
+     (let [f @(getCuratorFramework (getKeepers))
+           services-reg-ref (ref {})
+           srv-root "/clientregistrations"
+           cliregs-exist (-> f .checkExists (.forPath srv-root))
+           services (if cliregs-exist
+                      (-> f .getChildren (.forPath srv-root))
+                      '())]
+       (doseq [service services]
+         (let [cli-root (str srv-root "/" service)
+               clients (-> f .getChildren (.forPath cli-root))]
+           (dosync
+            (alter services-reg-ref assoc service clients))))
+       (dosync
+        (alter app-reg-ref assoc app @services-reg-ref))
                 (json-str @app-reg-ref))))
 
-(deftype ^{Path "/clientregistrations/{env}/{app}/{service}/{id}"}
+(deftype ^{Path "/clientregistrations/{service}/{id}"}
     ClientRegistratorImpl []
     ClientRegistrator
     (^{PUT true
        Consumes ["plain/text"]}
      ^void addRegistration [this
-                            ^{PathParam "env"} ^String env
-                            ^{PathParam "app"} ^String app
                             ^{PathParam "service"} ^String service
                             ^{PathParam "id"} ^String id]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection (getKeepers))
-           node (str "/" env "/" app "/clientregistrations/" service "/" id)]
-       (zk/create-all z node :persistent? true))))
+     (let [f @(getCuratorFramework (getKeepers))
+           path (str "/clientregistrations/" service "/" id)]
+       (-> f .create .creatingParentsIfNeeded (.forPath path)))))
 
-(deftype ^{Path "/createpassive/{env}"}
+(deftype ^{Path "/createpassive"}
     CreatePassiveGetterImpl []
     CreatePassiveGetter
     (^{GET true
        Produces ["application/json"]}
-     ^String getAllCreatePassives [this
-                                  ^{PathParam "env"} ^String env]
+     ^String getAllCreatePassives [this]
      (use 'clojure.data.json)
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection (getKeepers))
-           prefix (str "/" env)
-           applications (zk/children z prefix)
-           app-reg-ref (ref {})]
-           (doseq [app applications]
-               (let [srv-root (str prefix "/" app "/createpassive")
-                     srv-root-exists (zk/exists z srv-root)
-                     services (if srv-root-exists
-                         (zk/children z srv-root)
-                         '())]
-                   (dosync
-                       (if (and services (not (= `() services)))
-                           (alter app-reg-ref
-                               assoc app services)))))
-           (json-str @app-reg-ref))))
+     (let [f @(getCuratorFramework (getKeepers))
+           srv-root "/createpassive"
+           srv-root-exists (-> f .checkExists (.forPath srv-root))
+           services (if srv-root-exists
+                      (-> f .getChildren (.forPath srv-root))
+                      '())]
+       (json-str services))))
 
-(deftype ^{Path "/createpassive/{env}/{app}/{service}"}
+(deftype ^{Path "/createpassive/{service}"}
     CreatePassiveImpl []
     CreatePassive
     (^{PUT true
        Consumes ["plain/text"]}
      ^void addCreatePassive [this
-                            ^{PathParam "env"} ^String env
-                            ^{PathParam "app"} ^String app
                             ^{PathParam "service"} ^String service]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection (getKeepers))
-           node (str "/" env "/" app "/createpassive/" service)]
-       (zk/create-all z node :persistent? true)))
+     (let [f @(getCuratorFramework (getKeepers))
+           path ("/createpassive/" service)]
+       (-> f .create .creatingParentsIfNeeded (.forPath path))))
 
     (^{DELETE true
        Consumes ["plain/text"]}
      ^void rmCreatePassive [this
-                           ^{PathParam "env"} ^String env
-                           ^{PathParam "app"} ^String app
                            ^{PathParam "service"} ^String service]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection (getKeepers))
-           node (str "/" env "/" app "/createpassive/" service)
-           cr-passive-exists (zk/exists z node)]
+     (let [f @(getCuratorFramework (getKeepers))
+           path (str "/createpassive/" service)
+           cr-passive-exists (-> f .checkExists (.forPath path))]
        (if cr-passive-exists
-           (zk/delete z node)))))
+           (-> f .delete (.forPath path))))))
 
 (deftype ^{Path "/requestpassivation"}
     PassivationRequestorImpl []
@@ -348,11 +277,12 @@
     (^{POST true
        Consumes ["application/x-www-form-urlencoded"]}
      ^void requestPassivation [this
-                               ^{FormParam "node"} ^String node]
+                               ^{FormParm "region"} ^String region
+                               ^{FormParm "service"} ^String service
+                               ^{FormParam "id"} ^String id]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection (getKeepers))
-           pn (my-passivation-request-node node)]
-       (zk/create-all z pn :persistent? true)
+     (let [f @(getCuratorFramework (getKeepers))]
+       (ssesion/requestPassivation f region service id)
        nil)
      ))
 
@@ -362,11 +292,12 @@
     (^{POST true
        Consumes ["application/x-www-form-urlencoded"]}
      ^void requestActivation [this
-                              ^{FormParam "node"} ^String node]
+                               ^{FormParm "region"} ^String region
+                               ^{FormParm "service"} ^String service
+                               ^{FormParam "id"} ^String id]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection (getKeepers))
-           pn (my-activation-request-node node)]
-       (zk/create-all z pn :persistent? true)
+     (let [f @(getCuratorFramework (getKeepers))]
+       (ssesion/requestPassivation f region service id)
        nil)
   ))
 
@@ -375,26 +306,18 @@
     CleanUpCliRegs
     (^{GET true
        Consumes ["plain/text"]}
-     ^String cleanUpCliRegs [this
-                             ^{PathParam "env"} ^String env]
+     ^String cleanUpCliRegs [this]
      (use 'jerseyAdminService.AdminService)
-     (let [z @(getZooConnection (getKeepers))
-           removed-nodes-ref (ref '())
-           env-node (str "/" env)
-           env-exists (zk/exists z env-node)
-           apps (if env-exists (child-nodes z env-node) '())]
-       (if-not (= apps '())
-         ;; env node have children like:
-         ;; <env-node>/<APP>/<SERVICE> or
-         ;; <env-node>/<APP>/<SERVICE>/<CLIENT-ID>
-         ;; remove all <SERVICE> nodes that have no <CLIENT-ID> children
-         (doseq [app apps]
-           (let [service-nodes (child-nodes z (str app "/clientregistrations"))]
-             (doseq [serv-node service-nodes]
-               (if-not (zk/children z serv-node)
-                 (do
-                   (zk/delete z serv-node)
-                   (dosync (alter removed-nodes-ref (fn [nodes] (cons serv-node nodes))))))))))
+     (let [f @(getCuratorFramework (getKeepers))
+           service-paths (-> f .getChildren (.forPath "/clientregistrations"))]
+       ;; remove all <SERVICE> nodes that have no <CLIENT-ID> children
+       (doseq [serv service-paths]
+         (let [serv-path (str "/clientregistrations/" serv)])
+         (if-not (-> f .getChildren (.forPath serv-path))
+           (do
+             (-> f .delete (.forPath serv-path))
+             (dosync (alter removed-nodes-ref
+                            (fn [nodes] (cons serv-path nodes)))))))
        (json-str @removed-nodes-ref))))
 
 (defn- delete-childless-node
@@ -406,49 +329,39 @@
        (alter accum-ref (fn [accum] (cons node accum)))))))
 
 (defn- cleanupservices
-  [connection env app active?]
-  (let [z connection
-        removed-nodes-ref (ref '())
-        app-node (str "/" env "/" app (if active? "/services" "/passiveservices"))
-        app-exists (zk/exists z app-node)
-        regions (if app-exists (child-nodes z app-node) '())]
+  [f active?]
+  (let [removed-nodes-ref (ref '())
+        s-node (if active? "/services" "/passiveservices")
+        s-exists (-> f .checkExists (.forPath s-node))
+        regions (if app-exists (-> f .getChildren (.forPath s-node)) '())]
     (if-not (= regions '())
       (doseq [region regions]
-        (let [micro-ver-nodes (ggg-child-nodes z region)]
-          (doseq [micro-node micro-ver-nodes]
-            (delete-childless-node z removed-nodes-ref micro-node))
-          )
-        (let [minor-ver-nodes (gg-child-nodes z region)]
-          (doseq [minor-node minor-ver-nodes]
-            (delete-childless-node z removed-nodes-ref minor-node)))
-        (let [major-ver-nodes (g-child-nodes z region)]
-          (doseq [major-node major-ver-nodes]
-            (delete-childless-node z removed-nodes-ref major-node)))
-        (let [service-nodes (child-nodes z region)]
-          (doseq [service-node service-nodes]
-            (delete-childless-node z removed-nodes-ref service-node)))
-        )
-      )
+        (let [service-parent (str s-node "/" region)
+              services (-> f .getChildren (.forPath (str s-node "/" region)))]
+          (doseq [service services]
+            (let [service-path (str service-parent "/" service)
+                  ids (-> f .getChildren (.forPath service-path))]
+              (when (= ids '())
+                (do
+                  (-> f .delete (.forPath service-path))
+                  (dosync
+                   (alter removed-nodes-ref conj service-path)))))))))
     (json-str @removed-nodes-ref)))
 
-(deftype ^{Path "/cleanup/services/{env}/{app}"}
+(deftype ^{Path "/cleanup/services"}
     CleanUpServicesImpl []
     CleanUpServices
     (^{GET true
        Consumes ["plain/text"]}
-     ^String cleanUpServices [this
-                              ^{PathParam "env"} ^String env
-                              ^{PathParam "app"} ^String app]
+     ^String cleanUpServices [this]
      (use 'jerseyAdminService.AdminService)
-     (cleanupservices @(getZooConnection (getKeepers)) env app true)))
+     (cleanupservices @(getCuratorFramework (getKeepers)) true)))
 
-(deftype ^{Path "/cleanup/passiveservices/{env}/{app}"}
+(deftype ^{Path "/cleanup/passiveservices"}
     CleanUpPassiveServicesImpl []
     CleanUpServices
     (^{GET true
        Consumes ["plan/text"]}
-     ^String cleanUpServices [this
-                              ^{PathParam "env"} ^String env
-                              ^{PathParam "app"} ^String app]
+     ^String cleanUpServices [this]
      (use 'jerseyAdminService.AdminService)
-     (cleanupservices @(getZooConnection (getKeepers)) env app false)))
+     (cleanupservices @(getCuratorFramework (getKeepers)) false)))
